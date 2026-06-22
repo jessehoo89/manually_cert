@@ -104,15 +104,49 @@ acme.sh --renew --dns \
 
 ## 🛠️ 依赖要求
 
-- Debian/Ubuntu/CentOS 等 Linux 发行版
-- `git`, `curl`, `wget`, `socat`（脚本会自动检测安装）
-- 有效的域名和 DNS 管理权限
-- 能够访问外网（用于下载 acme.sh 和申请证书）
+- **系统**: Debian/Ubuntu/CentOS 等 Linux 发行版
+- **权限**: 需要 root 权限（用于安装 acme.sh 和写入证书目录）
+- **软件**: `git`, `curl`, `wget`, `socat`（脚本会自动检测并提示安装）
+- **网络**: 能够访问外网（用于下载 acme.sh 和申请证书）
+- **域名**: 有效的域名和 DNS 管理权限
 
 ## ❓ 常见问题
 
 ### Q: 支持哪些 DNS 服务商？
+
 A: 手动 DNS 模式支持所有 DNS 服务商。如需自动验证，acme.sh 支持阿里云、腾讯云、Cloudflare 等 50+ 服务商。
+
+### Q: 脚本提示需要 root 权限怎么办？
+
+A: 请使用以下方式之一运行：
+```bash
+# 方式 1: 使用 sudo
+sudo ./acme_auto_cert.sh
+
+# 方式 2: 切换到 root 用户
+su -
+./acme_auto_cert.sh
+```
+
+### Q: 为什么需要 root 权限？
+
+A: 主要原因：
+1. acme.sh 默认安装到 `/root/.acme.sh`
+2. 需要安装 cron 定时任务用于自动续期
+3. 证书目标目录可能需要 root 权限写入
+
+### Q: 已经安装过 acme.sh，会重复安装吗？
+
+A: 不会。脚本会自动检测 `~/.acme.sh/acme.sh` 是否存在：
+- **已安装**: 跳过克隆和安装步骤，直接使用现有环境
+- **未安装**: 执行完整的安装流程
+
+### Q: 如何自定义 acme.sh 安装路径？
+
+A: 通过环境变量 `ACME_HOME` 指定：
+```bash
+ACME_HOME="/opt/acme" ./acme_auto_cert.sh
+```
 
 ### Q: 证书申请失败怎么办？
 A: 

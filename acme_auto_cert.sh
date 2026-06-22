@@ -25,6 +25,9 @@ ACME_EMAIL=""
 # ACME 安装目录 (默认为 /opt/acme)
 ACME_INSTALL_DIR="/opt/acme"
 
+# acme.sh 默认安装路径 (acme.sh --install 的默认目标)
+ACME_HOME="${ACME_HOME:-/root/.acme.sh}"
+
 #############################################
 # 脚本主体
 #############################################
@@ -47,6 +50,23 @@ log_warn() {
 
 log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
+}
+
+# 检查 root 权限
+check_root() {
+    if [ "$EUID" -ne 0 ]; then 
+        log_error "此脚本需要 root 权限才能执行"
+        log_error "原因:"
+        log_error "  1. acme.sh 需要安装到 /root/.acme.sh"
+        log_error "  2. 需要安装 cron 定时任务用于自动续期"
+        log_error "  3. 证书目录可能需要 root 权限写入"
+        log_error ""
+        log_error "请使用以下方式运行:"
+        log_error "  sudo ./acme_auto_cert.sh"
+        log_error "或切换到 root 用户后运行"
+        exit 1
+    fi
+    log_info "Root 权限检查通过 ✓"
 }
 
 # 检查并获取用户输入
@@ -90,8 +110,24 @@ check_dependencies() {
 
 # 安装 acme.sh
 install_acme() {
+    # 检查 acme.sh 是否已安装 (检查默认安装路径)
+    if [ -x "$ACME_HOME/acme.sh" ]; then
+        log_info "检测到 acme.sh 已安装在：$ACME_HOME/acme.sh ✓"
+        log_info "跳过安装步骤，使用现有环境"
+        
+        # 确保 acme.sh 命令可用
+        export PATH="$ACME_HOME:$PATH"
+        
+        # 切换到 acme.sh 目录以便执行后续命令
+        cd "$ACME_HOME"
+        return 0
+    fi
+    
+    # acme.sh 未安装，执行安装流程
+    log_warn "未检测到 acme.sh，开始安装..."
+    
     if [ -d "$ACME_INSTALL_DIR/acme.sh" ]; then
-        log_info "acme.sh 已存在于 $ACME_INSTALL_DIR/acme.sh"
+        log_info "acme.sh 源码已存在于 $ACME_INSTALL_DIR/acme.sh"
         cd "$ACME_INSTALL_DIR/acme.sh"
     else
         log_info "克隆 acme.sh 到 $ACME_INSTALL_DIR..."
@@ -108,7 +144,7 @@ install_acme() {
     fi
     
     # 安装 acme.sh
-    log_info "安装 acme.sh..."
+    log_info "执行 acme.sh --install..."
     if [ -n "$ACME_EMAIL" ]; then
         ./acme.sh --install -m "$ACME_EMAIL"
     else
@@ -118,7 +154,7 @@ install_acme() {
     # 加载环境变量
     source ~/.bashrc 2>/dev/null || true
     
-    log_info "acme.sh 安装完成"
+    log_info "acme.sh 安装完成 ✓"
 }
 
 # 申请证书
@@ -212,6 +248,9 @@ main() {
     echo "========================================"
     echo ""
     
+    # 检查 root 权限
+    check_root
+    
     # 获取用户输入
     get_user_input "DOMAIN" "请输入要申请证书的域名 (支持多个，用空格分隔，如: *.example.com example.com): "
     get_user_input "ACME_EMAIL" "请输入 ACME 注册邮箱 (可选，直接回车跳过): "
@@ -223,6 +262,7 @@ main() {
     log_info "  邮箱: ${ACME_EMAIL:-未设置}"
     log_info "  证书归档目录: ${CERT_DEST:-未设置}"
     log_info "  ACME 安装目录: $ACME_INSTALL_DIR"
+    log_info "  acme.sh 路径：$ACME_HOME"
     echo ""
     
     read -p "确认以上配置并开始申请？(y/n): " confirm
