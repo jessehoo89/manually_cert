@@ -1,173 +1,115 @@
-# ACME 自动证书申请脚本
+# ACME 手动 DNS 验证证书脚本
 
-基于 `acme.sh` 的自动化 SSL/TLS 证书申请工具，支持手动 DNS 验证模式，适用于泛域名证书申请。
+基于 `acme.sh` 的 SSL/TLS 证书申请工具，走 **DNS-01 手动验证**，适用于没有 DNS API 凭证的域名（PassNAT、代理商托管域名等），可签发泛域名证书（`*.example.com`）。
 
-## 📋 功能特点
+## 适用与不适用
 
-- ✅ 自动检测并安装 `acme.sh`
-- ✅ 支持单域名和泛域名（`*.example.com`）证书申请
-- ✅ 支持多域名同时申请
-- ✅ 手动 DNS 验证模式（适合所有 DNS 服务商）
-- ✅ 灵活的配置方式（预设变量 / 环境变量 / 交互式输入）
-- ✅ 自动复制证书到指定目录
-- ✅ 使用 Gitee 镜像加速克隆（国内用户友好）
+- 适用：单个/多个域名、泛域名；DNS 只能手工加 TXT 记录；几台机器上偶尔签一次证书。
+- 不适用：需要无人值守自动续期。DNS 手动模式 acme.sh 明确**禁止** cron 自动续期，续期必须人工加记录（见「续期」）。
 
-## 🚀 快速开始
-
-### 1. 下载脚本
+## 用法
 
 ```bash
-git clone <your-repo-url>
-cd <repo-directory>
+git clone https://github.com/jessehoo89/manually_cert.git
+cd manually_cert
 chmod +x acme_auto_cert.sh
-```
 
-### 2. 运行方式
-
-#### 方式一：交互式运行（推荐新手）
-
-直接运行脚本，按提示输入域名和证书存放路径：
-
-```bash
+# 方式一：交互式（按提示填域名、邮箱、归档目录）
 ./acme_auto_cert.sh
+
+# 方式二：环境变量（适合脚本化、多条隧道复用一个域名）
+DOMAIN="*.odn.cc *.3q.hair" CERT_DEST=/vol2/1000/cert ./acme_auto_cert.sh
+
+# 方式三：只续期（复用上次保存的域名与目录）
+./acme_auto_cert.sh --renew
 ```
 
-#### 方式二：环境变量传参（适合自动化）
+不需要 root。acme.sh 装到当前用户的 `~/.acme.sh`，安装时不写 cron、不改 shell 配置（`--nocron --no-profile`）。
+
+## 环境变量
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `DOMAIN` | 空 | 域名，空格分隔；**第一个是主域名**，决定 acme.sh 目录名与续期的 `-d` 参数 |
+| `CERT_DEST` | 空 | 证书归档目录；留空则只留在 `~/.acme.sh` |
+| `ACME_EMAIL` | 空 | ACME 注册邮箱，可留空 |
+| `ACME_SERVER` | `letsencrypt` | 也可填 `zerossl`（ZeroSSL 需要邮箱，且走 EAB 注册） |
+| `KEY_LENGTH` | `ec-256` | 也可填 `2048` / `4096`（RSA）。ECC 时目录与续期命令都会带 `_ecc` / `--ecc` |
+| `ACME_HOME` | `$HOME/.acme.sh` | acme.sh 工作目录 |
+| `ACME_SRC` | `/opt/acme` | acme.sh 源码克隆目录，不可写时自动回落 `~/.acme-src` |
+| `DNS_WAIT` | `300` | 等待 TXT 生效的上限秒数（每 5 秒用 `dig` 查一次） |
+| `ALLOW_OTHER_READ` | `0` | 置 `1` 时归档目录 755、私钥 644，供其它系统用户的服务读取（如 frp / PassNAT） |
+| `ACME_DEBUG` | `0` | 置 `1` 时给 acme.sh 加 `--debug 2` |
+
+上次的 `DOMAIN` / `CERT_DEST` / `ACME_SERVER` / `KEY_LENGTH` 会存到 `${ACME_HOME}/.manual_cert_state`，供 `--renew` 复用。
+
+## 流程
+
+1. 运行脚本 → acme.sh 创建订单并打印每个域名的 `_acme-challenge.<域名>` TXT 记录值（**退出码 3 属正常**，表示等你加记录）
+2. 在 DNS 服务商处把 TXT 记录加好，回车继续
+3. 脚本自动用 `dig` 轮询确认记录生效（默认最多等 300 秒；超时后可选择继续或放弃）
+4. `acme.sh --renew --force --ecc` 完成验证与签发
+5. 自检：打印 subject / issuer / 有效期 / SAN，并校验私钥与证书公钥是否匹配（MD5 比对）
+6. 归档：先备份同名的旧文件到 `CERT_DEST/Backup/`，再按下面的命名复制
+
+## 归档目录里的文件
+
+| 文件 | 内容 |
+|---|---|
+| `<主域名>.cer` | **完整证书链**（叶子 + 中间证书）。frp / nginx / 反向代理直接指这个 |
+| `<主域名>.leaf.cer` | 仅叶子证书（仅当某个客户端只接受单张证书时才用） |
+| `<主域名>.key` | 私钥，默认 600（`ALLOW_OTHER_READ=1` 时 644） |
+| `ca.cer` | 中间 CA |
+| `fullchain.cer` | 与 `<主域名>.cer` 内容相同 |
+
+> 只发叶子证书会报 `unable to verify the first certificate` —— 中间证书不在多数客户端的信任库里。这就是 `<主域名>.cer` 直接给完整链的原因。
+
+## 续期
+
+手动 DNS 模式**不能自动续期**，到期前重跑一次即可：
 
 ```bash
-DOMAIN="*.s.odn.cc *.s.3q.hair" CERT_DEST="/vol1/1000/软件/cert" ./acme_auto_cert.sh
+./acme_auto_cert.sh --renew
 ```
 
-#### 方式三：预设配置（适合固定场景）
+`--renew` 会复用上次的域名与目录，仍会打印新的 TXT 记录、等你加完再验证。
 
-编辑脚本顶部的配置区域，填入默认值后直接运行：
+不用脚本、手敲 acme.sh 等价命令时，两个参数别漏：
 
 ```bash
-# 编辑脚本
-vim acme_auto_cert.sh
-
-# 修改以下变量（取消注释并填写）
-DOMAIN=""           # 留空则运行时输入
-CERT_DEST=""        # 留空则运行时输入
-ACME_EMAIL=""       # 留空则运行时输入
-ACME_HOME=""        # 留空则使用默认值 ~/.acme.sh
+# ECC 证书：必须 --ecc，否则会在 RSA 目录上操作
+# 必须 --force：没到续期窗口 acme.sh 会直接 skip（看起来像成功，其实没续）
+~/.acme.sh/acme.sh --renew -d '*.odn.cc' --ecc --force \
+  --server letsencrypt \
+  --yes-I-know-dns-manual-mode-enough-go-ahead-please
 ```
 
-## ⚙️ 配置说明
+## 常见问题
 
-| 变量名 | 说明 | 示例 |
-|--------|------|------|
-| `DOMAIN` | 要申请的域名，多个域名用空格分隔 | `"*.example.com"` 或 `"example.com www.example.com"` |
-| `CERT_DEST` | 证书复制目标目录 | `/etc/nginx/ssl/` 或 `/vol1/1000/软件/cert` |
-| `ACME_EMAIL` | 注册 ACME 账户的邮箱（用于证书过期通知） | `admin@example.com` |
-| `ACME_HOME` | acme.sh 安装目录（可选） | `/root/.acme.sh` |
+**Q：退出码 3 是失败吗？**
+不是。`CODE_DNS_MANUAL`（3）表示 acme.sh 在等你加 DNS 记录，脚本据此继续。
 
-## 📝 使用流程
+**Q：TXT 加了但验证失败？**
+先手工确认：`dig +short TXT _acme-challenge.<域名>` 能看到完整的值。国内 DNS 常有 1~5 分钟缓存延迟；把 TTL 设小一点、或换用权威 NS 查询（`dig +short TXT _acme-challenge.odn.cc @vip1.alidns.com`）。
 
-1. **运行脚本** - 选择上述任一方式启动脚本
-2. **添加 DNS 记录** - 根据脚本输出的 TXT 记录值，在您的 DNS 服务商处添加解析
-3. **确认验证** - 添加完成后按回车，脚本自动进行 DNS 验证
-4. **获取证书** - 验证通过后自动下载证书并复制到指定目录
+**Q：怎么换 CA？**
+`ACME_SERVER=zerossl ./acme_auto_cert.sh`。ZeroSSL 首次需要邮箱注册 EAB 账号。
 
-## 📁 证书文件说明
+**Q：证书给 frp / PassNAT 这类服务用，报 permission denied？**
+两个原因：①归档目录 700 且证书是别的用户的服务在跑 → 加 `ALLOW_OTHER_READ=1`；②路径里的中间证书缺失 → 指 `<主域名>.cer` 或 `fullchain.cer`，别指 `.leaf.cer`。
 
-成功申请后，目标目录将包含以下文件：
+**Q：域名带 `*`，路径里的 `*` 会被当通配符吗？**
+脚本内部全部加引号处理，不会。但你在自己的配置里写路径时也要加引号，例如
+`crtPath = "/vol2/1000/cert/*.odn.cc_ecc/*.odn.cc.cer"` 在 TOML 里是字面量，没问题；在 shell 里则要 `"/vol2/1000/cert/*.odn.cc_ecc/*.odn.cc.cer"`。
 
-| 文件名 | 说明 |
-|--------|------|
-| `domain.cer` | 域名证书文件 |
-| `domain.key` | 私钥文件（请妥善保管） |
-| `ca.cer` | 中间 CA 证书 |
-| `fullchain.cer` | 完整证书链（证书 + CA） |
+**Q：acme.sh 从哪来？**
+复用 `$ACME_HOME/acme.sh`；没有则克隆 Gitee 镜像（`gitee.com/neilpang/acme.sh`），失败回落 GitHub 官方仓库。镜像未做版本锁定，介意的话可自行 `git checkout <tag>` 后再运行。
 
-## 🔒 安全建议
+## 依赖
 
-- ⚠️ **私钥保护**：`*.key` 文件包含私钥，请设置合适的权限（建议 `600`）
-- ⚠️ **定期更新**：证书有效期为 90 天，建议设置定时任务自动续期
-- ⚠️ **备份证书**：重要证书的私钥请做好离线备份
+- Linux（bash 4.3+）、`git`、`curl`、`openssl`
+- `dig`（可选，用于 TXT 生效检查；缺失则跳过检查，手工确认即可）
 
-## 🔄 证书续期
+## 许可证
 
-已申请的证书可通过以下命令续期：
-
-```bash
-# 进入 acme.sh 目录
-cd ~/.acme.sh
-
-# 执行续期（手动 DNS 模式需要重新验证）
-acme.sh --renew --dns \
-  --yes-I-know-dns-manual-mode-enough-go-ahead-please \
-  -d "your-domain.com"
-```
-
-> 💡 **提示**：如果使用 API 自动 DNS 验证，可配置自动续期 cron 任务。
-
-## 🛠️ 依赖要求
-
-- **系统**: Debian/Ubuntu/CentOS 等 Linux 发行版
-- **权限**: 需要 root 权限（用于安装 acme.sh 和写入证书目录）
-- **软件**: `git`, `curl`, `wget`, `socat`（脚本会自动检测并提示安装）
-- **网络**: 能够访问外网（用于下载 acme.sh 和申请证书）
-- **域名**: 有效的域名和 DNS 管理权限
-
-## ❓ 常见问题
-
-### Q: 支持哪些 DNS 服务商？
-
-A: 手动 DNS 模式支持所有 DNS 服务商。如需自动验证，acme.sh 支持阿里云、腾讯云、Cloudflare 等 50+ 服务商。
-
-### Q: 脚本提示需要 root 权限怎么办？
-
-A: 请使用以下方式之一运行：
-```bash
-# 方式 1: 使用 sudo
-sudo ./acme_auto_cert.sh
-
-# 方式 2: 切换到 root 用户
-su -
-./acme_auto_cert.sh
-```
-
-### Q: 为什么需要 root 权限？
-
-A: 主要原因：
-1. acme.sh 默认安装到 `/root/.acme.sh`
-2. 需要安装 cron 定时任务用于自动续期
-3. 证书目标目录可能需要 root 权限写入
-
-### Q: 已经安装过 acme.sh，会重复安装吗？
-
-A: 不会。脚本会自动检测 `~/.acme.sh/acme.sh` 是否存在：
-- **已安装**: 跳过克隆和安装步骤，直接使用现有环境
-- **未安装**: 执行完整的安装流程
-
-### Q: 如何自定义 acme.sh 安装路径？
-
-A: 通过环境变量 `ACME_HOME` 指定：
-```bash
-ACME_HOME="/opt/acme" ./acme_auto_cert.sh
-```
-
-### Q: 证书申请失败怎么办？
-A: 
-1. 检查 DNS TXT 记录是否正确添加（注意前缀 `_acme-challenge.`）
-2. 等待 DNS 生效（通常 1-5 分钟）
-3. 添加 `--debug` 参数查看详细日志
-
-### Q: 如何更改 CA 机构？
-A: 默认使用 ZeroSSL，可在脚本中添加 `--server letsencrypt` 切换到 Let's Encrypt。
-
-## 📄 许可证
-
-本脚本基于 MIT 协议开源。
-
-## 🔗 相关链接
-
-- [acme.sh 官方文档](https://github.com/acmesh-official/acme.sh)
-- [Let's Encrypt](https://letsencrypt.org/)
-- [ZeroSSL](https://zerossl.com/)
-
----
-
-**作者**: 基于用户实际需求定制  
-**最后更新**: 2026-03-31
+MIT

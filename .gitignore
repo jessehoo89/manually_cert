@@ -1,4 +1,3 @@
-```gitignore
 # Compiled and binary files
 *.pyc
 *.class
@@ -63,4 +62,10 @@ htmlcov/
 *.tar.bz2
 *.tar.xz
 *.tar.zst
-```
+
+# 证书与私钥（防止误提交）
+*.key
+*.cer
+*.pem
+*.crt
+*.csr
